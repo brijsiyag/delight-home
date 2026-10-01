@@ -1,0 +1,310 @@
+<h1 id="delight">Delight</h1>
+<p>A launcher for macOS. Press <strong>⌘⇧Space</strong>, type or paste something, and Delight offers the tools that
+fit it: format the JSON, look up the DNS, preview the SVG, open a service&#39;s dashboards. Every tool is
+a <strong>plugin</strong>, so you can add your own.</p>
+<ul>
+<li>Built-in tools: <strong>JSON</strong>, <strong>YAML ⇄ JSON</strong>, <strong>SVG preview</strong>, <strong>DNS lookup</strong>.</li>
+<li>Plugins are single <code>.wasm</code> files. Each one shows its own interface and can only do what it asked
+permission for.</li>
+<li>macOS, Apple Silicon and Intel. Signed and notarised; updates itself.</li>
+</ul>
+<h2 id="install">Install</h2>
+<p>Download <code>Delight-X.Y.Z.dmg</code> from the <a href="https://github.com/brijsiyag/delight/releases/latest">latest release</a>,
+drag Delight to Applications and start it. It lives in the menu bar; <strong>⌘⇧Space</strong> shows and hides the
+launcher (change it in Settings → General). Delight checks for updates once a day; <em>Check for Updates…</em>
+in the menu bar does it now.</p>
+<p>To add a plugin: <strong>Settings → Plugins → Install…</strong>, pick the <code>.wasm</code>. Delight shows what the plugin
+says it can do (network, running programs) and asks before installing.</p>
+<h2 id="using-it">Using it</h2>
+<ul>
+<li>Type or paste. The tools on the left are ranked by how well they fit the input; the best one opens.
+<strong>⌘1–⌘9</strong> picks a tool, <strong>↓</strong> or <strong>Tab</strong> moves into the list, <strong>→</strong> into the tool.</li>
+<li>The footer shows the tool&#39;s actions and their keys. Every tool uses the same keys: <strong>↵</strong>, <strong>⌘↵</strong>
+and <strong>⌥1 … ⌥9</strong>.</li>
+<li><strong>Tab</strong> accepts a completion from your input history; <strong>⌃R</strong> searches it. Turn it off in
+Settings → General.</li>
+<li><strong>⌘K</strong> clears, <strong>⌘,</strong> opens Settings, <strong>Esc</strong> hides.</li>
+<li>Where things are stored: <code>~/Library/Application Support/Delight</code> (settings, installed plugins,
+input history, each plugin&#39;s data), secrets in the login Keychain, logs in <code>~/Library/Logs/Delight</code>
+(<em>Open Logs</em> in the menu bar).</li>
+</ul>
+<p>The full behaviour is in <a href="docs/behaviour.md"><code>docs/behaviour.md</code></a>.</p>
+<h2 id="how-it-works">How it works</h2>
+<pre><code class="lang-text">Delight<span class="hljs-selector-class">.app</span> (native GPUI)
+ ├─ launcher: <span class="hljs-selector-tag">input</span> → detection → tool list → tool pane → <span class="hljs-selector-tag">footer</span> actions
+ ├─ settings window
+ └─ runtime: one sandboxed WebAssembly instance per plugin (wasmtime)
+        ▲  <span class="hljs-selector-tag">a</span> small <span class="hljs-selector-tag">object</span> protocol (crates/protocol)
+        ▼
+plugin<span class="hljs-selector-class">.wasm</span>: its own GPUI, drawn into <span class="hljs-selector-tag">a</span> surface the launcher shows
+</code></pre>
+<ul>
+<li><strong>The app is generic.</strong> It owns the window, the input, the tool list, the footer, settings, history
+and updates. It knows nothing about JSON or DNS: <strong>tools draw all of their own UI</strong>.</li>
+<li><strong>A plugin is a WebAssembly component</strong> (<code>wasm32-wasip2</code>) that runs its own GPUI, through
+<a href="https://github.com/zed-industries/embedded_gpui">embedded_gpui</a>, and hands the app a view. What it
+is (id, name, icon, tools, permissions, tips) is stored in the <code>.wasm</code> itself, so the app reads it
+without running the plugin.</li>
+<li><strong>Detection.</strong> On every change of the input the app asks each plugin <code>detect(input)</code>, which returns
+the tools that fit with a confidence from 0 to 1. Tools at 0.5 or more are <em>Recommended</em>; the
+highest is selected. Then the app hands the input to the tool (<code>on_input_changed</code>), shows its
+footer actions (<code>list_actions</code>) and runs the one you pick (<code>perform_action</code>).</li>
+<li><strong>Sandbox and permissions.</strong> A plugin sees its own data folder (<code>/data</code>) and nothing else. The
+network and running programs need a permission the plugin declares with a reason, which you see
+when installing. A plugin that fails is stopped on its own and the others carry on.</li>
+<li><strong>Versioning.</strong> Plugins are built against the plugin API and carry its <code>major.minor</code>. The app runs
+a plugin of the same major and a minor no newer than its own; anything else is refused with a
+message, and needs a rebuild. <strong>Before 1.0 a minor bump can break plugins</strong>, so rebuild your plugins
+when you update the API.</li>
+</ul>
+<p>The layout of the code is in <a href="docs/plan.md"><code>docs/plan.md</code></a>.</p>
+<h2 id="writing-a-plugin">Writing a plugin</h2>
+<p>A plugin is a Rust <code>cdylib</code> crate.</p>
+<h3 id="which-crates-and-why-they-are-git-dependencies">Which crates, and why they are git dependencies</h3>
+<p>Nothing Delight builds on is released on crates.io yet, so everything is taken from git, pinned:</p>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>Where from</th>
+<th>Pinned to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>delight-plugin-api</code>, <code>delight-ui</code></td>
+<td>this repository, <code>github.com/brijsiyag/delight</code></td>
+<td>a release commit (<code>rev</code>)</td>
+</tr>
+<tr>
+<td><code>gpui</code></td>
+<td>Zed&#39;s <code>gpui-multi-root-embedded-rebased</code> branch, <code>github.com/zed-industries/zed</code></td>
+<td>the commit in <code>Cargo.lock</code> (today <code>8c88a5c</code>), <code>version = &quot;=0.2.2&quot;</code></td>
+</tr>
+<tr>
+<td><code>embedded_gpui</code> (the layer that lets a plugin run its own GPUI)</td>
+<td>for now the fork <code>github.com/brijsiyag/embedded_gpui</code>, branch <code>delight</code>: upstream&#39;s <code>surfaces-as-roots</code> plus hidden surfaces and a compile cache (see <a href="docs/development.md"><code>docs/development.md</code></a>, &quot;The embedded_gpui fork&quot;); back to <code>zed-industries/embedded_gpui</code> once upstream has them</td>
+<td>a commit, taken in by <code>delight-plugin-api</code>, so a plugin never names it</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>GPUI is the branch&#39;s, not crates.io&#39;s <code>gpui</code>.</strong> Plugins and the app must use exactly the same
+GPUI, so a plugin names it exactly as above (branch and version), or Cargo links a second copy and
+the build fails or misbehaves. Copy the <code>gpui</code> line from this repository&#39;s <code>Cargo.toml</code>, and
+commit your <code>Cargo.lock</code>, which pins the commit.</li>
+<li><strong>The plugin API&#39;s <code>rev</code> is the version you build for.</strong> Change it to the commit of a newer release
+and rebuild to move up; a plugin built for a newer minor than the app is refused.</li>
+<li><strong>This is temporary.</strong> Once embedded_gpui is officially released, Delight and its plugin API move
+to the released crates, and plugins will depend on those versions instead of git commits. The
+plugin code itself doesn&#39;t change; the <code>Cargo.toml</code> lines do, and the plugins need rebuilding
+against that release.</li>
+</ul>
+<pre><code class="lang-toml"><span class="hljs-comment"># Cargo.toml</span>
+[lib]
+<span class="hljs-attr">crate-type</span> = [<span class="hljs-string">"cdylib"</span>]
+
+[dependencies]
+<span class="hljs-attr">delight-plugin-api</span> = { <span class="hljs-attr">git</span> = <span class="hljs-string">"https://github.com/brijsiyag/delight.git"</span>, <span class="hljs-attr">rev</span> = <span class="hljs-string">"&lt;a release commit&gt;"</span> }
+<span class="hljs-attr">delight-ui</span> = { <span class="hljs-attr">git</span> = <span class="hljs-string">"https://github.com/brijsiyag/delight.git"</span>, <span class="hljs-attr">rev</span> = <span class="hljs-string">"&lt;the same commit&gt;"</span> }
+<span class="hljs-comment"># Named exactly like this (see above), or Cargo links a second GPUI.</span>
+<span class="hljs-attr">gpui</span> = { <span class="hljs-attr">git</span> = <span class="hljs-string">"https://github.com/zed-industries/zed.git"</span>, <span class="hljs-attr">branch</span> = <span class="hljs-string">"gpui-multi-root-embedded-rebased"</span>, <span class="hljs-attr">version</span> = <span class="hljs-string">"=0.2.2"</span>, <span class="hljs-attr">default-features</span> = <span class="hljs-literal">false</span> }
+</code></pre>
+<p>Pin dependencies exactly, and copy <code>rust-toolchain.toml</code> (Rust 1.95 with the <code>wasm32-wasip2</code> target)
+from this repository. Then the plugin is three things:</p>
+<pre><code class="lang-rust"><span class="hljs-keyword">use</span> delight_plugin_api::{Action, Actions, AnyTool, Detection, Input, Operations, Plugin, Shortcut, Tool, host, plugin};
+<span class="hljs-keyword">use</span> gpui::{App, AppContext <span class="hljs-keyword">as</span> _, Context, IntoElement, Render, Window, div, prelude::*};
+
+<span class="hljs-comment">// 1. The plugin: what it is. Everything here is checked when it compiles.</span>
+<span class="hljs-meta">#[plugin(
+    id = <span class="hljs-meta-string">"dev.example.shout"</span>,              // letters, digits, . _ -
+    name = <span class="hljs-meta-string">"Shout"</span>,
+    description = <span class="hljs-meta-string">"Turns text into capitals"</span>,
+    author = <span class="hljs-meta-string">"You"</span>,
+    icon = <span class="hljs-meta-string">"assets/icon.svg"</span>,              // square, full colour, its own background
+    tips = [<span class="hljs-meta-string">"shout &lt;text&gt; makes capitals"</span>]</span> <span class="hljs-comment">// what to type, not which keys; at most 5, 60 characters each</span>
+)]
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">Shout</span></span>;
+
+<span class="hljs-comment">// 2. Its tools ("operations"), and how it recognises input for them.</span>
+<span class="hljs-meta">#[derive(Operations)]</span>
+<span class="hljs-class"><span class="hljs-keyword">enum</span> <span class="hljs-title">ShoutOperation</span></span> {
+    <span class="hljs-meta">#[operation(id = <span class="hljs-meta-string">"shout"</span>, title = <span class="hljs-meta-string">"Shout"</span>)]</span>
+    Shout,
+}
+
+<span class="hljs-keyword">impl</span> Plugin <span class="hljs-keyword">for</span> Shout {
+    <span class="hljs-class"><span class="hljs-keyword">type</span> <span class="hljs-title">Operation</span></span> = ShoutOperation;
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">new</span></span>(_cx: &amp;<span class="hljs-keyword">mut</span> App) -&gt; <span class="hljs-keyword">Self</span> { Shout }
+
+    <span class="hljs-comment">// Runs on every keystroke: keep it quick.</span>
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">detect</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>, input: &amp;Input, _cx: &amp;<span class="hljs-keyword">mut</span> App) -&gt; <span class="hljs-built_in">Vec</span>&lt;Detection&lt;ShoutOperation&gt;&gt; {
+        <span class="hljs-keyword">if</span> input.text.starts_with(<span class="hljs-string">"shout "</span>) { <span class="hljs-built_in">vec!</span>[Detection::new(ShoutOperation::Shout, <span class="hljs-number">1.0</span>)] } <span class="hljs-keyword">else</span> { <span class="hljs-built_in">vec!</span>[] }
+    }
+
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">open_tool</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>, _op: ShoutOperation, cx: &amp;<span class="hljs-keyword">mut</span> App) -&gt; AnyTool {
+        cx.new(|_| ShoutTool { text: <span class="hljs-built_in">String</span>::new() }).into()
+    }
+}
+
+<span class="hljs-comment">// 3. A tool: a GPUI view, plus footer actions.</span>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">ShoutTool</span></span> { text: <span class="hljs-built_in">String</span> }
+
+<span class="hljs-meta">#[derive(Actions)]</span>
+<span class="hljs-class"><span class="hljs-keyword">enum</span> <span class="hljs-title">ShoutAction</span></span> { <span class="hljs-built_in">Copy</span> }
+
+<span class="hljs-keyword">impl</span> Tool <span class="hljs-keyword">for</span> ShoutTool {
+    <span class="hljs-class"><span class="hljs-keyword">type</span> <span class="hljs-title">Action</span></span> = ShoutAction;
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">on_input_changed</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>, input: &amp;Input, cx: &amp;<span class="hljs-keyword">mut</span> Context&lt;<span class="hljs-keyword">Self</span>&gt;) {
+        <span class="hljs-keyword">self</span>.text = input.text.trim_start_matches(<span class="hljs-string">"shout "</span>).to_uppercase();
+        cx.notify();
+    }
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">list_actions</span></span>(&amp;<span class="hljs-keyword">self</span>, _: &amp;App) -&gt; <span class="hljs-built_in">Vec</span>&lt;Action&lt;ShoutAction&gt;&gt; {
+        <span class="hljs-built_in">vec!</span>[Action::new(ShoutAction::<span class="hljs-built_in">Copy</span>, <span class="hljs-string">"Copy"</span>, Shortcut::Enter).primary()]
+    }
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">perform_action</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>, _: ShoutAction, cx: &amp;<span class="hljs-keyword">mut</span> Context&lt;<span class="hljs-keyword">Self</span>&gt;) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(<span class="hljs-keyword">self</span>.text.clone()));
+        host(cx).toast(<span class="hljs-string">"Copied"</span>, cx);
+        host(cx).hide(cx);
+    }
+}
+
+<span class="hljs-keyword">impl</span> Render <span class="hljs-keyword">for</span> ShoutTool {
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">render</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>, _: &amp;<span class="hljs-keyword">mut</span> Window, _: &amp;<span class="hljs-keyword">mut</span> Context&lt;<span class="hljs-keyword">Self</span>&gt;) -&gt; <span class="hljs-keyword">impl</span> IntoElement { div().child(<span class="hljs-keyword">self</span>.text.clone()) }
+}
+</code></pre>
+<p>Build it and install the file from Settings → Plugins → Install…:</p>
+<pre><code class="lang-sh">cargo build --<span class="hljs-built_in">release</span> --target wasm32-wasip2
+<span class="hljs-meta"># target/wasm32-wasip2/release/<span class="hljs-meta-string">&lt;crate_name&gt;</span>.wasm</span>
+</code></pre>
+<p>Working examples: the built-ins in <a href="plugins"><code>plugins/</code></a> (JSON, YAML, SVG, DNS). Unit-test your logic natively (<code>cargo test</code>): the API compiles on the Mac and does nothing there.</p>
+<h3 id="rules-that-shape-a-plugin">Rules that shape a plugin</h3>
+<ul>
+<li><strong>Action keys are fixed:</strong> <code>Shortcut::Enter</code> (↵), <code>CmdEnter</code> (⌘↵), <code>Option(1..=9)</code> (⌥1–⌥9) or
+<code>ClickOnly</code>. Any other key is refused. The footer shows four actions; a destructive one should
+never be on plain ↵ (mark it <code>.attention()</code> or leave it on a click).</li>
+<li><strong>Theme:</strong> use <code>delight_ui</code>&#39;s components and theme colours, not your own tokens; they follow
+light/dark automatically.</li>
+<li><strong>Settings:</strong> return sections from <code>Plugin::settings_sections</code>; the app draws the card, title and
+footer and you draw the rows. Heights are declared by you. See
+<a href="docs/plugin-settings.md"><code>docs/plugin-settings.md</code></a>.</li>
+<li><strong>Permissions</strong> are declared in <code>#[plugin(permissions = [...])]</code>, each with a reason of at most
+100 characters: <code>Network(&quot;why&quot;)</code> and <code>Commands(&quot;why&quot;, programs = [&quot;/bin/ps&quot;])</code>. Programs must be an
+absolute path directly in <code>/bin</code>, <code>/sbin</code>, <code>/usr/bin</code> or <code>/usr/sbin</code>.</li>
+</ul>
+<h3 id="publishing-updates">Publishing updates</h3>
+<p>Plugins are published at a location: a URL such as a GitHub release&#39;s download address. Delight
+defines the files there; how they are made is up to the plugins&#39; repository, and any tool can write
+them (Meesho&#39;s plugins use <code>cargo xtask publish</code> in github.com/Meesho/delight-plugins). Rust tools
+can read and write them with <code>delight_manifest::Release</code> and <code>PluginList</code> (feature <code>files</code>).</p>
+<p>For each plugin the location holds two files, named by its id: <code>&lt;id&gt;.wasm</code>, the plugin (at most
+64 MiB), and <code>&lt;id&gt;.xml</code>, its manifest there (at most 1 MiB):</p>
+<pre><code class="lang-xml"><span class="php"><span class="hljs-meta">&lt;?</span>xml version=<span class="hljs-string">"1.0"</span> encoding=<span class="hljs-string">"UTF-8"</span><span class="hljs-meta">?&gt;</span></span>
+<span class="hljs-tag">&lt;<span class="hljs-name">plugin</span> <span class="hljs-attr">id</span>=<span class="hljs-string">"local.logs"</span> <span class="hljs-attr">version</span>=<span class="hljs-string">"0.0.5"</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">name</span>&gt;</span>Logs<span class="hljs-tag">&lt;/<span class="hljs-name">name</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">description</span>&gt;</span>Search logs with KQL on your Elasticsearch hosts.<span class="hljs-tag">&lt;/<span class="hljs-name">description</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">sha256</span>&gt;</span>…the .wasm's SHA-256: 64 lowercase hex digits…<span class="hljs-tag">&lt;/<span class="hljs-name">sha256</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">plugin</span>&gt;</span>
+</code></pre>
+<p><code>id</code> and <code>version</code> are the plugin&#39;s own (its <code>#[plugin(id)]</code>, and its crate&#39;s version, SemVer), and
+the <code>.wasm</code> must carry the same; <code>name</code> (the id if left out) and <code>description</code> are shown when
+picking what to install. Beside them, a list can give several plugins at the location in the same
+form, each once, under any file name:</p>
+<pre><code class="lang-xml"><span class="hljs-tag">&lt;<span class="hljs-name">plugins</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">plugin</span> <span class="hljs-attr">id</span>=<span class="hljs-string">"local.calendar"</span> <span class="hljs-attr">version</span>=<span class="hljs-string">"0.0.5"</span>&gt;</span>…<span class="hljs-tag">&lt;/<span class="hljs-name">plugin</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">plugin</span> <span class="hljs-attr">id</span>=<span class="hljs-string">"local.logs"</span> <span class="hljs-attr">version</span>=<span class="hljs-string">"0.0.5"</span>&gt;</span>…<span class="hljs-tag">&lt;/<span class="hljs-name">plugin</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">plugins</span>&gt;</span>
+</code></pre>
+<p>One location holds any number of plugins. A plugin names only its location:</p>
+<pre><code class="lang-rust">#[<span class="hljs-keyword">plugin</span>(id = <span class="hljs-string">"local.logs"</span>, name = <span class="hljs-string">"Logs"</span>, icon = <span class="hljs-string">"assets/icon.svg"</span>,
+         <span class="hljs-keyword">update</span> = <span class="hljs-string">"https://github.com/Meesho/delight-plugins/releases/latest/download"</span>)]
+</code></pre>
+<p>Delight reads <code>&lt;location&gt;/&lt;id&gt;.xml</code> at launch and once a day, and downloads <code>&lt;location&gt;/&lt;id&gt;.wasm</code>
+only when the version (SemVer, the crate&#39;s <code>version</code>) is newer than the one installed. It checks the
+file&#39;s SHA-256, its id and its version before anything runs. An update that asks for no new
+permissions installs by itself unless the plugin&#39;s page has &quot;Update automatically&quot; off, keeping the
+plugin&#39;s data, secrets and settings; one that asks for more is shown like a new install, and waits
+for a yes.</p>
+<p>People install from a location too: Settings → the arrow beside &quot;Install Plugin&quot; → &quot;From a Link…&quot;,
+with a link to an XML file at the location: a list (every plugin in it, to pick from) or one
+plugin&#39;s <code>&lt;id&gt;.xml</code>. Delight reads the file to tell which; its name doesn&#39;t matter. A copy installed
+before you added <code>update</code> doesn&#39;t know where to look: install the new build once.</p>
+<p>Whatever publishes them: bump a plugin&#39;s version for every change (Delight takes only a newer one),
+put the <code>.wasm</code> there before the <code>.xml</code> that names it, and, with a <code>latest</code> location, attach every
+plugin to every release, or the ones left out can&#39;t be found.</p>
+<h3 id="what-host-cx-gives-a-plugin">What <code>host(cx)</code> gives a plugin</h3>
+<table>
+<thead>
+<tr>
+<th>Needs</th>
+<th>API</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>nothing</td>
+<td><code>toast</code>, <code>hide</code>, <code>set_input</code> (chain tools: puts text in the launcher), <code>remember_input</code> (history), <code>settings</code> / <code>set_settings</code> (a JSON value the app keeps), <code>secret</code> / <code>set_secret</code> (Keychain-backed), <code>open_settings</code>, <code>open_window</code> (a window of the plugin&#39;s own), <code>confirm</code> (the system alert), <code>utc_offset_seconds</code>, <code>theme</code></td>
+</tr>
+<tr>
+<td>nothing</td>
+<td>the <strong>clipboard</strong>, through GPUI&#39;s own <code>cx.read_from_clipboard()</code> / <code>cx.write_to_clipboard()</code>, by design open to every plugin</td>
+</tr>
+<tr>
+<td><code>Network</code></td>
+<td><code>http</code>, <code>listen_http</code>, gRPC, <code>dns_resolvers</code> (see below)</td>
+</tr>
+<tr>
+<td><code>Commands</code></td>
+<td><code>run</code> a listed program: no shell, empty environment, 60 s limit</td>
+</tr>
+<tr>
+<td>nothing (temporary)</td>
+<td><code>open_url</code> (see below)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="temporary-host-apis">Temporary host APIs</h2>
+<p>Some of what plugins get from the app stands in for what embedded_gpui or WASI will give them directly.
+Once it does, these are deprecated, then removed, and <strong>plugins that use them must be updated</strong>. Each is
+kept apart in the code and marked, so <code>grep -rn &quot;TEMPORARY(&lt;name&gt;)&quot;</code> lists all of it.</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>Today</th>
+<th>Goes when</th>
+<th>Plugins then</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The network</strong> (<code>TEMPORARY(network)</code>)</td>
+<td><code>host(cx).http(request, cx)</code> with the <code>http</code> crate&#39;s types; <code>host(cx).listen_http(…)</code> for a sign-in&#39;s redirect on <code>127.0.0.1</code>; gRPC via tonic&#39;s generated clients (<code>network::grpc::channel</code>, the <code>grpc</code> feature). The app does HTTP/1.1, HTTP/2 and TLS natively, and macOS checks certificates. WASI&#39;s own sockets work too.</td>
+<td>embedded_gpui links <code>wasi:http</code> (with WASI 0.3&#39;s async)</td>
+<td>use ordinary HTTP and gRPC clients</td>
+</tr>
+<tr>
+<td><strong>Opening a URL</strong> (<code>TEMPORARY(open_url)</code>)</td>
+<td><code>host(cx).open_url(url, cx)</code> opens it in the app macOS has for it: a browser, the mail app for <code>mailto:</code>. Not <code>file:</code>.</td>
+<td>embedded_gpui forwards GPUI&#39;s own <code>cx.open_url</code> from plugins</td>
+<td>call <code>cx.open_url</code></td>
+</tr>
+<tr>
+<td><strong>Clipboard freshness</strong> (<code>TEMPORARY(clipboard)</code>)</td>
+<td>Nothing to call. Delight refreshes a plugin&#39;s copy of the clipboard early, so the first paste after copying elsewhere is the latest copy.</td>
+<td>embedded_gpui delivers the change before the key</td>
+<td>nothing changes</td>
+</tr>
+</tbody>
+</table>
+<p>Also expect changes while the protocol is below 1.0 (the current <code>0.0</code>): the host API, the action
+model (<code>Shortcut</code>, styles) and the settings sections may still change between minor versions. The
+release notes say when a plugin needs rebuilding.</p>
+<h2 id="building-the-app">Building the app</h2>
+<pre><code class="lang-sh">cargo <span class="hljs-keyword">run</span><span class="bash"> -p delight-app                     <span class="hljs-comment"># run the app</span>
+</span>cd plugins &amp;&amp; cargo build --release --target wasm32-wasip2   <span class="hljs-comment"># the built-in plugins</span>
+</code></pre>
+<p>The details (the WASI SDK the JSON and YAML built-ins need, signing, notarising, the release steps and
+the AppKit workarounds waiting on GPUI) are in <a href="docs/development.md"><code>docs/development.md</code></a>.</p>
+<h2 id="license">License</h2>
+<p>MIT</p>
